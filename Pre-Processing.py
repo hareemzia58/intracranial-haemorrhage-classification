@@ -6,17 +6,18 @@ from tqdm import tqdm
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
-#Convert DICOM pixel values to Hounsfield Units (HU)
+# Convert DICOM pixel values to Hounsfield Units (HU)
 def dicom_to_hu(dicom_ds):
     image = dicom_ds.pixel_array.astype(np.float32)
     
     intercept = getattr(dicom_ds, 'RescaleIntercept', -1024)
     slope = getattr(dicom_ds, 'RescaleSlope', 1.0)
     
-    # Standardize padding values below -1000 to air density
-    image[image < -1000] = -1000
-    
     hu_image = (image * slope) + intercept
+    
+    # standardize air/padding values below -1000 HU
+    hu_image[hu_image < -1000] = -1000
+    
     return hu_image
 
 # Apply windowing to the HU image
@@ -113,7 +114,7 @@ def process_dicom_folder(dicom_dir: str, output_dir: str, target_size: int = 384
 
 
 if __name__ == "__main__":
-    INPUT_DICOM_DIR = r"C:\Users\haree\Downloads\rsna_sample_dataset"
-    OUTPUT_PNG_DIR = r"C:\Users\haree\OneDrive\Documents\rsna_dataset_png"
+    INPUT_DICOM_DIR = r"C:\Users\haree\Downloads\rsna_24k_images"
+    OUTPUT_PNG_DIR = r"C:\Users\haree\Downloads\rsna_24k_png"
 
     process_dicom_folder(INPUT_DICOM_DIR, OUTPUT_PNG_DIR, target_size=384)
