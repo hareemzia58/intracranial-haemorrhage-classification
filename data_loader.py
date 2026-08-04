@@ -1,156 +1,233 @@
+%%writefile /kaggle/working/data_loader.py
 import os
 import cv2
 import torch
 import numpy as np
 import pandas as pd
+
 from torch.utils.data import Dataset, DataLoader
+
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-from sklearn.model_selection import train_test_split
 
-# Augmentation Pipelines
-def get_train_transforms(img_size: int = 384) -> A.Compose:
+from sklearn.model_selection import StratifiedGroupKFold
+
+
+def get_train_transforms(img_size=384):
+
     return A.Compose([
+
         A.HorizontalFlip(p=0.5),
-        A.Affine(
-            scale=(0.95, 1.05),
-            translate_percent=(-0.05, 0.05),
-            rotate=(-12, 12),
+
+        A.ShiftScaleRotate(
+            shift_limit=0.03,
+            scale_limit=0.05,
+            rotate_limit=10,
             border_mode=cv2.BORDER_CONSTANT,
-            fill=0,
-            p=0.5
+            p=0.5,
         ),
-        A.RandomBrightnessContrast(
-            brightness_limit=0.1, 
-            contrast_limit=0.1, 
-            p=0.4
+
+        A.GaussNoise(
+            std_range=(0.01, 0.03),
+            mean_range=(0.0, 0.0),
+            p=0.25,
         ),
-        A.Resize(height=img_size, width=img_size),
+
+        A.GaussianBlur(
+            blur_limit=(3, 3),
+            p=0.15,
+        ),
+
+        A.ElasticTransform(
+            alpha=1,
+            sigma=20,
+            p=0.10,
+        ),
+
+        A.Resize(img_size, img_size),
+
         A.Normalize(
-            mean=[0.485, 0.456, 0.406], 
-            std=[0.229, 0.224, 0.225]
+            mean=[0.485,0.456,0.406],
+            std=[0.229,0.224,0.225]
         ),
+
         ToTensorV2()
+
     ])
 
 
-def get_val_transforms(img_size: int = 384) -> A.Compose:
+def get_val_transforms(img_size=384):
+
     return A.Compose([
-        A.Resize(height=img_size, width=img_size),
+
+        A.Resize(img_size, img_size),
+
         A.Normalize(
-            mean=[0.485, 0.456, 0.406], 
-            std=[0.229, 0.224, 0.225]
+            mean=[0.485,0.456,0.406],
+            std=[0.229,0.224,0.225]
         ),
+
         ToTensorV2()
+
     ])
+
 
 class RSNADataset(Dataset):
-    def __init__(self, df: pd.DataFrame, img_dir: str, transform=None):
+
+    def __init__(self, df, img_dir, transform=None):
+
         self.df = df.reset_index(drop=True)
         self.img_dir = img_dir
         self.transform = transform
-        
-        # Target label columns
-        self.label_cols = ['any', 'epidural', 'intraparenchymal', 
-                           'intraventricular', 'subarachnoid', 'subdural']
-        
-        # Pre-extract label matrix as float32 numpy array for faster indexing
+
+        self.label_cols = [
+            "any",
+            "epidural",
+            "intraparenchymal",
+            "intraventricular",
+            "subarachnoid",
+            "subdural"
+        ]
+
         self.labels = self.df[self.label_cols].values.astype(np.float32)
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.df)
 
-    def __getitem__(self, idx: int):
-        img_id = self.df.iloc[idx]['Image_ID']
-        img_path = os.path.join(self.img_dir, f"{img_id}.png")
-        
-        image = cv2.imread(img_path)
+    def __getitem__(self, idx):
+
+        image_id = self.df.iloc[idx]["Image_ID"]
+
+        path = os.path.join(
+            self.img_dir,
+            image_id + ".png"
+        )
+
+        image = cv2.imread(path)
+
         if image is None:
-            raise FileNotFoundError(f"Image not found at path: {img_path}")
-            
-        # convert to RGB for OpenCV
+            raise FileNotFoundError(path)
+
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Apply Augmentation + Normalization + ToTensor
-        if self.transform:
-            augmented = self.transform(image=image)
-            image = augmented['image']
-            
-        label = torch.tensor(self.labels[idx], dtype=torch.float32)
+
+        if self.transform is not None:
+            image = self.transform(image=image)["image"]
+
+        label = torch.tensor(
+            self.labels[idx],
+            dtype=torch.float32
+        )
+
         return image, label
 
-# 3. Train/Val/Test Split & DataLoader Helper
+
 def prepare_dataloaders(
-    df: pd.DataFrame, 
-    img_dir: str, 
-    batch_size: int = 32, 
-    num_workers: int = 4,
-    img_size: int = 384
+    df,
+    img_dir,
+    batch_size,
+    num_workers,
+    img_size,
+    patient_col="PatientID",
 ):
-    stratify_col = df['any']
-    
-    # split into Train (80%) and Temp (20%)
-    train_df, temp_df = train_test_split(
-        df, 
-        test_size=0.20, 
-        random_state=42, 
-        stratify=stratify_col
-    )
-    
-    temp_stratify = temp_df['any']
-    
-    # split Temp into 10% Val and 10% Test
-    val_df, test_df = train_test_split(
-        temp_df, 
-        test_size=0.50, 
-        random_state=42, 
-        stratify=temp_stratify
-    )
-    
-    print(f"Dataset Split Summary:")
-    print(f" - Train samples: {len(train_df)}")
-    print(f" - Val samples:   {len(val_df)}")
-    print(f" - Test samples:  {len(test_df)}")
 
-    # Create PyTorch Datasets
-    train_dataset = RSNADataset(train_df, img_dir, transform=get_train_transforms(img_size))
-    val_dataset   = RSNADataset(val_df, img_dir, transform=get_val_transforms(img_size))
-    test_dataset  = RSNADataset(test_df, img_dir, transform=get_val_transforms(img_size))
+    groups = df[patient_col]
+    y = df["any"]
 
-    # Create PyTorch DataLoaders
-    use_pin = torch.cuda.is_available()
+    outer = StratifiedGroupKFold(
+        n_splits=5,
+        shuffle=True,
+        random_state=42
+    )
+
+    train_idx, temp_idx = next(
+        outer.split(df, y, groups)
+    )
+
+    train_df = df.iloc[train_idx].reset_index(drop=True)
+    temp_df = df.iloc[temp_idx].reset_index(drop=True)
+
+    inner = StratifiedGroupKFold(
+        n_splits=2,
+        shuffle=True,
+        random_state=42
+    )
+
+    val_idx, test_idx = next(
+
+        inner.split(
+
+            temp_df,
+
+            temp_df["any"],
+
+            temp_df[patient_col]
+
+        )
+
+    )
+
+    val_df = temp_df.iloc[val_idx].reset_index(drop=True)
+    test_df = temp_df.iloc[test_idx].reset_index(drop=True)
+
+    print()
+
+    print("Dataset Summary")
+
+    print("--------------------------")
+
+    print("Train :", len(train_df))
+    print("Val   :", len(val_df))
+    print("Test  :", len(test_df))
+
+    train_dataset = RSNADataset(
+        train_df,
+        img_dir,
+        get_train_transforms(img_size)
+    )
+
+    val_dataset = RSNADataset(
+        val_df,
+        img_dir,
+        get_val_transforms(img_size)
+    )
+
+    test_dataset = RSNADataset(
+        test_df,
+        img_dir,
+        get_val_transforms(img_size)
+    )
+
+    pin = torch.cuda.is_available()
 
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, 
-        num_workers=num_workers, pin_memory=use_pin
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin,
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
+        drop_last=True,
     )
+
     val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, 
-        num_workers=num_workers, pin_memory=use_pin
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin,
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
     )
+
     test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False, 
-        num_workers=num_workers, pin_memory=use_pin
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin,
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     return train_loader, val_loader, test_loader
-
-if __name__ == "__main__":
-    PNG_DIR = r"C:\Users\haree\OneDrive\Documents\rsna_dataset_png"
-    METADATA_CSV = r"C:\Users\haree\OneDrive\Documents\rsna_train_sample_final.csv"
-    
-    df = pd.read_csv(METADATA_CSV)
-    
-    train_loader, val_loader, test_loader = prepare_dataloaders(
-        df=df, 
-        img_dir=PNG_DIR, 
-        batch_size=16, 
-        num_workers=2,
-        img_size=384
-    )
-    
-    images, labels = next(iter(train_loader))
-    
-    print(f"Images batch tensor shape: {images.shape}") 
-    print(f"Labels batch tensor shape: {labels.shape}") 
-    print(f"Sample label vector: {labels[0]}")
