@@ -168,3 +168,78 @@ Validation loss trended upward after ~epoch 5 even as macro F1 kept improving sl
 - subarachnoid / subdural: F1 0.65 / 0.67, PR-AUC 0.72 / 0.74
 - epidural: F1 0.04, PR-AUC 0.086 (precision 0.11, recall 0.03 — 1 of 39 positives caught)
 - Macro F1: 0.62
+
+---
+ 
+## Experiment 4: EfficientNet-B0 + Class-Balanced Focal Loss + Weighted Sampler
+ 
+**Dataset:** ~100,002 images (79,845 train / 10,088 val / 10,069 test) — same sample as
+Experiment 3.
+ 
+**Config:**
+| | |
+|---|---|
+| Backbone | EfficientNet-B0 |
+| Loss | Class-Balanced Focal Loss (effective-number-of-samples reweighting, `beta=0.9995`, `gamma=2.0`) |
+| Sampler | `WeightedRandomSampler` on the training loader — sample weight = max class weight (`sqrt(negatives/positives)`, capped at 10x) among an image's positive labels |
+| Learning rate | 2e-4 |
+| Weight decay | 1e-4 |
+| Batch size | 16 |
+| Optimizer | AdamW |
+| Scheduler | `CosineAnnealingWarmRestarts` (T_0=5, T_mult=2, stepped every batch) |
+| Classification threshold | Per-label, learned each epoch (same strategy as Experiment 3) |
+| Checkpoint selection | Highest macro F1 |
+| Max epochs / patience | 50 / 8 |
+| Augmentations | Updated set: CLAHE + RandomGamma + GaussNoise added, plain brightness/contrast removed, affine translate/rotate ranges tightened to ±3%/±10° |
+ 
+**Training:** Early stopping triggered at epoch 19. Best macro F1 (0.6492) reached at epoch 11.
+ 
+**Evaluation:** `evaluate.py` was run twice — once against validation and once against test. Results below are test-set.
+ 
+**Learned thresholds used:** any 0.541, epidural 0.184, intraparenchymal 0.421, intraventricular
+0.539, subarachnoid 0.499, subdural 0.436.
+ 
+**Results (test set):**
+- `any`: precision 0.847, recall 0.779, F1 0.812, PR-AUC 0.883
+- intraparenchymal / intraventricular: F1 0.752 / 0.771, PR-AUC 0.805 / 0.827
+- subarachnoid / subdural: F1 0.639 / 0.630, PR-AUC 0.701 / 0.699
+- epidural: F1 0.242, PR-AUC 0.146 (precision 0.296, recall 0.205)
+- Macro F1: 0.641
+---
+ 
+## Experiment 5: EfficientNet-B0 + Class-Balanced Focal Loss (no sampler)
+ 
+**Dataset:** ~100,002 images (79,845 train / 10,078 val / 10,079 test) — same pool as
+Experiments 3–4. Val/test counts differ slightly from Experiment 4 because this run's inner
+split uses plain `GroupKFold` (grouped by patient, not re-stratified on `any`) rather than
+`StratifiedGroupKFold`.
+ 
+**Config:**
+| | |
+|---|---|
+| Backbone | EfficientNet-B0 |
+| Loss | Class-Balanced Focal Loss (effective-number-of-samples reweighting, `beta=0.9999`, `gamma=2.0`) |
+| Sampler | None — plain `shuffle=True` (removed vs. Experiment 4, to isolate the sampler's effect) |
+| Learning rate | 2e-4 |
+| Weight decay | 1e-4 |
+| Batch size | 16 |
+| Optimizer | AdamW |
+| Scheduler | `CosineAnnealingWarmRestarts` (T_0=5, T_mult=2, stepped once per epoch) |
+| Classification threshold | Fixed 0.5 during training (checkpoint selection); per-label thresholds optimized once on val set after training, then applied to test |
+| Checkpoint selection | Highest macro F1 at 0.5 threshold |
+| Max epochs / patience | 50 / 8 |
+| Augmentations | Same updated set as Experiment 4 |
+ 
+**Training:** Early stopping triggered at epoch 22. Best validation macro F1 at the fixed 0.5
+threshold (0.6562) reached at epoch 14.
+ 
+**Post-training threshold optimization (validation set, single pass on best checkpoint):** any
+0.360, epidural 0.518, intraparenchymal 0.412, intraventricular 0.548, subarachnoid 0.446,
+subdural 0.336.
+ 
+**Results (test set, using val-learned thresholds):**
+- `any`: precision 0.831, recall 0.785, F1 0.807, PR-AUC 0.879
+- intraparenchymal / intraventricular: F1 0.761 / 0.786, PR-AUC 0.823 / 0.848
+- subarachnoid / subdural: F1 0.646 / 0.666, PR-AUC 0.694 / 0.717
+- epidural: F1 0.237, PR-AUC 0.162 (precision 0.333, recall 0.184)
+- Macro F1: 0.651
